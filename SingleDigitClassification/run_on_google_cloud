@@ -1,0 +1,17 @@
+#!/bin/bash
+
+JOB_NAME=svhn_20
+BUCKET_NAME=mindful-experience-4425
+OUTPUT_PATH=gs://$BUCKET_NAME/$JOB_NAME
+DATA_PATH=gs://$BUCKET_NAME/data/SVHN.pickle
+
+gcloud ml-engine jobs submit training $JOB_NAME \
+    --job-dir $OUTPUT_PATH \
+    --runtime-version 1.0 \
+    --module-name SingleDigitClassification/task \
+    --package-path SingleDigitClassification/ \
+    -- \
+    --data-path $DATA_PATH
+
+SOMEVAR="Running on Google Cloud"
+echo "$SOMEVAR"

@@ -1,0 +1,4 @@
+In tensorflow 'SAME' padding is equivalent to zero-padding, meaning that zeros are added around the border of the image
+if there is need in order to make each input pixel be mapped to the output. As a result if the stride of the
+convolutional layer is 1, the input will have the same size as the output.
+'VALID' padding means that only inputs that can be mapped without padding are mapped (meaning no padding).
