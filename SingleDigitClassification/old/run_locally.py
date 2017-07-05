@@ -1,4 +1,4 @@
-from model import run_experiment
+from model_asd import run_experiment
 
 data_path = 'data/SVHN.pickle'
 output_path = 'logs'

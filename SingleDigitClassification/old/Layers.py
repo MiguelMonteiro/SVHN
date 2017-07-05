@@ -1,7 +1,6 @@
 from abc import abstractmethod
 import tensorflow as tf
 import numpy as np
-from sklearn.naive_bayes import MultinomialNB
 
 
 def variable_summaries(var, var_name):

@@ -1,7 +1,7 @@
 import numpy as np
 import tensorflow as tf
 
-from SingleDigitClassification.Layers import ConvolutionLayer, MaxPoolingLayer, FullyConnectedLayer
+from SingleDigitClassification.old.Layers import ConvolutionLayer, MaxPoolingLayer, FullyConnectedLayer
 
 
 def build_architecture(image_size, num_channels, num_labels, patch_sizes, depths, conv_strides,
