@@ -169,7 +169,7 @@ def run(target, is_chief, train_steps, job_dir, file_path, batch_size, eval_freq
                                                is_chief=is_chief,
                                                checkpoint_dir=job_dir,
                                                hooks=hooks,
-                                               save_checkpoint_secs=10,
+                                               save_checkpoint_secs=60,
                                                save_summaries_steps=100) as session:
             # Global step to keep track of global number of steps particularly in
             # distributed setting
