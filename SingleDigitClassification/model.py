@@ -173,10 +173,11 @@ def model_fn(mode):
 
     # Training computation.
     logits = model(tf_input_data)
-
-    if mode in (PREDICT, EVAL):
-        probabilities = tf.nn.softmax(logits)
-        predicted_indices = tf.argmax(probabilities, 1)
+    # compute probabilities regardless of mode
+    probabilities = tf.nn.softmax(logits)
+    predicted_indices = tf.argmax(probabilities, 1)
+    # this maintains a running accuracy (acc, acc_op)
+    accuracy = tf.metrics.accuracy(tf_labels, predicted_indices)
 
     if mode in (TRAIN, EVAL):
         global_step = tf.contrib.framework.get_or_create_global_step()
@@ -189,6 +190,9 @@ def model_fn(mode):
     #     }
 
     if mode == TRAIN:
+        # save running accuracy even in training
+        tf.summary.scalar('train_accuracy', accuracy[0])
+
         # calculate cross entropy loss
         with tf.variable_scope('loss_function'):
             loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=tf_labels))
@@ -201,6 +205,5 @@ def model_fn(mode):
 
     if mode == EVAL:
         labels_one_hot = tf.one_hot(tf_labels, depth=num_labels, on_value=True, off_value=False, dtype=tf.bool)
-        accuracy = tf.metrics.accuracy(tf_labels, predicted_indices)
         auc = tf.metrics.auc(labels_one_hot, probabilities)
         return {'accuracy': accuracy, 'AUC': auc}

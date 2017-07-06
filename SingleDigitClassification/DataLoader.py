@@ -6,7 +6,33 @@ from six.moves import cPickle as pickle
 import scipy.io
 import random
 import numpy as np
-import matplotlib.pyplot as plt
+
+# def _bytes_feature(value):
+#     return tf.train.Feature(bytes_list=tf.train.BytesList(value=[value]))
+#
+#
+# def _int64_feature(value):
+#     return tf.train.Feature(int64_list=tf.train.Int64List(value=[value]))
+#
+#
+# def save_to_tf_record(data, labels, file_name):
+#     tfrecords_filename = file_name + '.tfrecords'
+#
+#     writer = tf.python_io.TFRecordWriter(tfrecords_filename)
+#
+#     for im, l in zip(data, labels):
+#         np.set_printoptions(precision=128)
+#         shape = np.array(im.shape).tostring()
+#         img_raw = im.tostring()
+#         l_raw = l.tostring()
+#
+#         example = tf.train.Example(features=tf.train.Features(feature={
+#             'shape': _bytes_feature(shape),
+#             'image_raw': _bytes_feature(img_raw),
+#             'label_raw': _bytes_feature(l_raw)}))
+#
+#         writer.write(example.SerializeToString())
+#     writer.close()
 
 
 def im2gray(image):
@@ -138,14 +164,16 @@ train_data = pre_process_images(train_data)
 valid_data = pre_process_images(valid_data)
 test_data = pre_process_images(test_data)
 
-visualize_some_examples(train_data, train_labels)
+#visualize_some_examples(train_data, train_labels)
 
-filename = 'data/SVHN.pickle'
-with open(filename, 'wb') as f:
-    print('Pickling file: {0}'.format(filename))
-    save = {'train_set': train_data, 'train_labels': train_labels,
-            'valid_set': valid_data, 'valid_labels': valid_labels,
-            'test_set': test_data, 'test_labels': test_labels}
-    pickle.dump(save, f, pickle.HIGHEST_PROTOCOL)
-    statinfo = os.stat(filename)
-    print('Compressed pickle size:', statinfo.st_size/1e6, ' MB')
+save_to_tf_record(train_data, train_labels,'asdf')
+
+# filename = 'data/SVHN.pickle'
+# with open(filename, 'wb') as f:
+#     print('Pickling file: {0}'.format(filename))
+#     save = {'train_set': train_data, 'train_labels': train_labels,
+#             'valid_set': valid_data, 'valid_labels': valid_labels,
+#             'test_set': test_data, 'test_labels': test_labels}
+#     pickle.dump(save, f, pickle.HIGHEST_PROTOCOL)
+#     statinfo = os.stat(filename)
+#     print('Compressed pickle size:', statinfo.st_size/1e6, ' MB')

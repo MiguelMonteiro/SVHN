@@ -1,6 +1,8 @@
 #!/bin/bash
 
-JOB_NAME=svhn_20
+    --scale-tier STANDARD_1 \
+
+JOB_NAME=svhn_23_multiple_machines
 BUCKET_NAME=mindful-experience-4425
 OUTPUT_PATH=gs://$BUCKET_NAME/$JOB_NAME
 DATA_PATH=gs://$BUCKET_NAME/data/SVHN.pickle
@@ -10,8 +12,9 @@ gcloud ml-engine jobs submit training $JOB_NAME \
     --runtime-version 1.0 \
     --module-name SingleDigitClassification/task \
     --package-path SingleDigitClassification/ \
+    --scale-tier STANDARD_1 \
     -- \
-    --data-path $DATA_PATH
+    --file-path $DATA_PATH \
+    --train-steps 10000 \
 
-SOMEVAR="Running on Google Cloud"
-echo "$SOMEVAR"
+python -m tensorflow.tensorboard --logdir=$OUTPUT_PATH

@@ -2,11 +2,12 @@ import argparse
 import json
 import os
 import threading
-import model
+import SingleDigitClassification.model as model
 import tensorflow as tf
 from tensorflow.python.saved_model import signature_constants as sig_constants
 from tensorflow.python.lib.io import file_io
 from six.moves import cPickle as pickle
+import numpy as np
 
 
 def load_data(file_path):
@@ -16,6 +17,29 @@ def load_data(file_path):
             [data[key] for key in ['train_set', 'train_labels', 'valid_set', 'valid_labels', 'test_set', 'test_labels']]
 
     return train_set, train_labels, valid_set, valid_labels, test_set, test_labels
+
+
+# fix later
+class BatchGenerator(object):
+    def __init__(self, data, labels, batch_size, loop=False):
+        self.data = data
+        self.labels = labels
+        self.batch_size = batch_size
+        self.loop = loop
+        self.step = 0
+
+    def __iter__(self):
+        return self
+
+    def next(self):
+        if not self.loop and self.step * self.batch_size > len(self.labels):
+            raise StopIteration
+
+        offset = (self.step * self.batch_size) % (len(self.labels) - self.batch_size)
+        batch_data = self.data[offset:(offset + self.batch_size)]
+        batch_labels = self.labels[offset:(offset + self.batch_size)]
+        self.step += 1
+        return batch_data, batch_labels
 
 
 tf.logging.set_verbosity(tf.logging.INFO)
@@ -41,7 +65,6 @@ class EvaluationRunHook(tf.train.SessionRunHook):
         self._checkpoints_since_eval = 0
         self._graph = graph
         self.file_path = file_path
-
         # With the graph object as default graph
         # See https://www.tensorflow.org/api_docs/python/tf/Graph#as_default
         # Adds ops to the graph object
@@ -105,23 +128,35 @@ class EvaluationRunHook(tf.train.SessionRunHook):
             self._run_eval()
 
     def _run_eval(self):
-        train_set, train_labels, valid_set, valid_labels, test_set, test_labels = load_data(self.file_path)
         """Run model evaluation and generate summaries."""
-        coord = tf.train.Coordinator(clean_stop_exception_types=(tf.errors.CancelledError, tf.errors.OutOfRangeError))
+        coord = tf.train.Coordinator(clean_stop_exception_types=(
+            tf.errors.CancelledError, tf.errors.OutOfRangeError))
 
         with tf.Session(graph=self._graph) as session:
+
             # Restores previously saved variables from latest checkpoint
             self._saver.restore(session, self._latest_checkpoint)
 
-            session.run([tf.tables_initializer(), tf.local_variables_initializer()])
+            session.run([
+                tf.tables_initializer(),
+                tf.local_variables_initializer()
+            ])
             tf.train.start_queue_runners(coord=coord, sess=session)
             train_step = session.run(self._gs)
 
             tf.logging.info('Starting Evaluation For Step: {}'.format(train_step))
+
             with coord.stop_on_exception():
-                feed_dict = {'tf_input_data:0': valid_set[:100], 'tf_labels:0': valid_labels[:100], 'keep_prob:0': 1.0}
-                summaries, final_values, _ = session.run(
-                    [self._summary_op, self._final_ops_dict, self._eval_ops], feed_dict=feed_dict)
+                eval_step = 0
+                train_set, train_labels, valid_set, valid_labels, test_set, test_labels = load_data(self.file_path)
+                valid_batch_generator = BatchGenerator(valid_set, valid_labels, 500)
+                for batch_data, batch_labels in valid_batch_generator:
+                    if coord.should_stop():
+                        break
+                    feed_dict = {'tf_input_data:0': batch_data, 'tf_labels:0': batch_labels, 'keep_prob:0': 1.0}
+                    summaries, final_values, _ = session.run(
+                        [self._summary_op, self._final_ops_dict, self._eval_ops], feed_dict=feed_dict)
+
 
             # Write the summaries
             self._file_writer.add_summary(summaries, global_step=train_step)
@@ -145,7 +180,7 @@ def run(target, is_chief, train_steps, job_dir, file_path, batch_size, eval_freq
             # model.model_fn returns the dict when EVAL mode
             metric_dict = model.model_fn(model.EVAL)
 
-        hooks = [EvaluationRunHook(job_dir, metric_dict, evaluation_graph, eval_frequency, file_path=file_path)]
+        hooks = [EvaluationRunHook(job_dir, metric_dict, evaluation_graph, eval_frequency, file_path)]
     else:
         hooks = []
 
@@ -318,8 +353,8 @@ if __name__ == "__main__":
                         default=64,
                         help='Batch size for training steps')
     parser.add_argument('--eval-frequency',
-                        default=10,
-                        help='Perform one evaluation per n steps')
+                        default=1,
+                        help='Perform one evaluation per n checkpoints (not training steps))')
     parser.add_argument('--num-epochs',
                         type=int,
                         help='Maximum number of epochs on which to train')
