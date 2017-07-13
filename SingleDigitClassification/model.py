@@ -1,178 +1,78 @@
 import numpy as np
 import tensorflow as tf
-from abc import abstractmethod
 import multiprocessing
-
-
-# def variable_summaries(var, var_name):
-#     """Attach a lot of summaries to a Tensor (for TensorBoard visualization)."""
-#     with tf.name_scope(var_name + '_summary'):
-#         mean = tf.reduce_mean(var)
-#         tf.summary.scalar('mean', mean)
-#         with tf.name_scope('stddev'):
-#             stddev = tf.sqrt(tf.reduce_mean(tf.square(var - mean)))
-#         tf.summary.scalar('stddev', stddev)
-#         tf.summary.scalar('max', tf.reduce_max(var))
-#         tf.summary.scalar('min', tf.reduce_min(var))
-#         tf.summary.histogram('histogram', var)
-
-
-def calculate_output_dimension(input_size, patch_size, strides, padding_type):
-    assert np.shape(input_size) == (2,)
-    padding = np.array([0, 0])
-    if padding_type == 'SAME':
-        padding = (strides - 1) / 2
-    output_size = (input_size - patch_size + 2 * padding) / strides + 1
-    return output_size
-
-
-class Layer(object):
-    @abstractmethod
-    def operate(self, layer_input):
-        """Performs the operation defined by the layer over the layer_input variable"""
-
-
-class ConvolutionLayer(Layer):
-    def __init__(self, layer_num, patch_size, in_depth, out_depth, strides, padding='VALID'):
-        self.layer_name = 'convolution_layer_' + layer_num
-        self.patch_size = patch_size
-        self.in_depth = in_depth
-        self.out_depth = out_depth
-        self.strides = strides
-        self.padding = padding
-
-        self.w_shape = [patch_size[0], patch_size[1], in_depth, out_depth]
-        self.b_shape = [out_depth]
-        self.strides_shape = [1, strides[0], strides[1], 1]
-        with tf.variable_scope(self.layer_name):
-            self.w = tf.get_variable(name='weights', shape=self.w_shape,
-                                     initializer=tf.contrib.layers.xavier_initializer_conv2d())
-            self.b = tf.Variable(tf.constant(1.0, shape=self.b_shape), name='biases')
-
-    def operate(self, layer_input):
-        with tf.variable_scope(self.layer_name + '/'):
-            convolution = tf.nn.conv2d(layer_input, self.w, self.strides_shape, self.padding, name='convolution')
-            return tf.nn.relu(convolution + self.b)
-
-    def calculate_output_dimension(self, input_size):
-        return calculate_output_dimension(input_size, self.patch_size, self.strides, self.padding)
-
-
-# Max pooling operation with local response normalization before pooling
-class MaxPoolingLayer(Layer):
-    def __init__(self, layer_num, filter_size, strides, padding='SAME'):
-        self.layer_name = 'max_pooling_layer_' + layer_num
-        self.filter_size = filter_size
-        self.strides = strides
-        self.padding = padding
-
-        self.filter_shape = [1, filter_size[0], filter_size[1], 1]
-        self.strides_shape = [1, strides[0], strides[1], 1]
-
-    def operate(self, layer_input):
-        with tf.variable_scope(self.layer_name):
-            lrn = tf.nn.local_response_normalization(layer_input)
-            return tf.nn.max_pool(lrn, self.filter_shape, self.strides_shape, self.padding, name='P' + self.layer_name)
-
-    def calculate_output_dimension(self, input_size):
-        return calculate_output_dimension(input_size, self.filter_size, self.strides, self.padding)
-
-
-# Fully connected layer = linear units plus relu after if relu_output==True
-class FullyConnectedLayer(Layer):
-    def __init__(self, layer_num, input_size, output_size, relu_output=True):
-        self.layer_name = 'fully_connected_' + layer_num
-        self.input_size = input_size
-        self.output_size = output_size
-        self.relu_output = relu_output
-
-        self.w_shape = [input_size, output_size]
-        self.b_shape = [output_size]
-        with tf.variable_scope(self.layer_name):
-            self.w = tf.get_variable(name='weights', shape=self.w_shape,
-                                     initializer=tf.contrib.layers.xavier_initializer())
-            self.b = tf.Variable(tf.constant(1.0, shape=self.b_shape), name='biases')
-
-    def operate(self, layer_input):
-        with tf.variable_scope(self.layer_name + '/'):
-            output = tf.matmul(layer_input, self.w) + self.b
-            if self.relu_output:
-                return tf.nn.relu(output)
-        return output
-
 
 TRAIN, EVAL, PREDICT = 'TRAIN', 'EVAL', 'PREDICT'
 CSV, EXAMPLE, JSON = 'CSV', 'EXAMPLE', 'JSON'
 PREDICTION_MODES = [CSV, EXAMPLE, JSON]
 
 
-def model_fn(mode):
+# these two are only for fully connected
+def xavier_normal_dist(shape):
+    return tf.truncated_normal(shape, mean=0, stddev=tf.sqrt(3. / (shape[0] + shape[1])))
+
+
+def xavier_uniform_dist(shape):
+    lim = tf.sqrt(6. / (shape[0] + shape[1]))
+    return tf.random_uniform(shape, minval=-lim, maxval=lim)
+
+
+def convolution_layer(tf_input, patch_size, in_depth, out_depth, strides, padding='VALID'):
+    w = tf.get_variable(name='weights', shape=[patch_size[0], patch_size[1], in_depth, out_depth],
+                        initializer=tf.contrib.layers.xavier_initializer_conv2d())
+    b = tf.Variable(tf.constant(1.0, shape=[out_depth]), name='biases')
+    convolution = tf.nn.conv2d(tf_input, w, strides, padding)
+    return convolution + b
+
+
+def max_pooling_layer(tf_input, filter_size, strides, padding='SAME'):
+    lrn = tf.nn.local_response_normalization(tf_input)
+    return tf.nn.max_pool(lrn, [1, filter_size[0], filter_size[1], 1], strides, padding)
+
+
+def fully_connected_layer(tf_input, input_size, output_size):
+    w = tf.Variable(xavier_uniform_dist([input_size, output_size]), name='weights')
+    b = tf.Variable(tf.constant(1.0, shape=[output_size]), name='biases')
+    return tf.matmul(tf_input, w) + b
+
+
+def model_fn(mode, tf_input, tf_labels):
+    image_size = [32, 32]
+    num_channels = 1
+    # input tensors
+    #tf_input = tf.placeholder(tf.float32, shape=(None, image_size[0], image_size[1], num_channels), name='tf_input_data')
+    #tf_labels = tf.placeholder(tf.int64, shape=None, name='tf_labels')
+
+    if mode is TRAIN:
+        keep_prob = .9375
+    else:
+        keep_prob = 1.
+
     # this is the Udacity's course architecture
-    batch_size = 64
-    image_size = np.array([32, 32])
     num_channels = 1
     num_labels = 10
 
     # 3 convolutional layers with the same patch size and stride
     depths = [16, 32, 64]
     n = len(depths)
-    patch_sizes = [np.array([5, 5])] * n
-    conv_strides = [np.array([1, 1])] * n
-    padding = ['VALID'] * n
-    # 2 max pooling layers between the convolutional layers
-    pooling_strides = [np.array([2, 2])] * (n - 1)
-    pooling_filter_sizes = [np.array([2, 2])] * (n - 1)
-    # one hidden layer (not including the connecting hidden layer whose size is defined by the convolutional layers)
     num_hidden = [32]
 
-    layer_num = 1
-
-    # Image Layers
-    image_layers = []
+    tensor = tf_input
     depths = [num_channels] + depths
     for i in range(len(depths) - 1):
-        if i > 0:
-            image_layers.append(MaxPoolingLayer(str(layer_num), pooling_filter_sizes[i - 1], pooling_strides[i - 1]))
-        image_layers.append(ConvolutionLayer(str(layer_num), patch_sizes[i], depths[i], depths[i + 1], conv_strides[i]))
-        layer_num += 1
+        with tf.variable_scope('layer_{0}'.format(i)):
+            if i > 0:
+                tensor = max_pooling_layer(tensor, [2, 2], [1, 2, 2, 1])
+            tensor = tf.nn.relu(convolution_layer(tensor, [5, 5], depths[i], depths[i + 1], [1, 1, 1, 1]))
 
-    # Connecting layer
-    input_size = image_size
-    for layer in image_layers:
-        input_size = layer.calculate_output_dimension(input_size)
-    connecting_layer_size = np.prod(input_size) * depths[-1]
+    tensor = tf.nn.dropout(tensor, keep_prob)
+    shape = tensor.get_shape().as_list()
+    tensor = tf.reshape(tensor, [-1, shape[1] * shape[2] * shape[3]])
 
-    # fully connected layers
-    fully_connected_layers = []
-    n_nodes = [connecting_layer_size] + num_hidden
-    for i in range(len(n_nodes) - 1):
-        fully_connected_layers.append(FullyConnectedLayer(str(layer_num), n_nodes[i], n_nodes[i + 1]))
-        layer_num += 1
-    # classification layer
-    fully_connected_layers.append(FullyConnectedLayer(str(layer_num), n_nodes[-1], num_labels, relu_output=False))
+    tensor = tf.nn.relu(fully_connected_layer(tensor, shape[-1], num_hidden[0]))
 
-    # input tensors
-    tf_input_data = tf.placeholder(tf.float32, shape=(None, image_size[0], image_size[1], num_channels),
-                                   name='tf_input_data')
-    tf_labels = tf.placeholder(tf.int64, shape=None, name='tf_labels')
-    keep_prob = tf.placeholder(tf.float32, shape=[], name='keep_prob')
+    logits = fully_connected_layer(tensor, num_hidden[-1], num_labels)
 
-    # Model
-    def model(layer_input):
-        for layer in image_layers:
-            layer_input = layer.operate(layer_input)
-
-        layer_input = tf.nn.dropout(layer_input, keep_prob)
-        shape = layer_input.get_shape().as_list()
-        layer_input = tf.reshape(layer_input, [-1, shape[1] * shape[2] * shape[3]])
-
-        for layer in fully_connected_layers:
-            layer_input = layer.operate(layer_input)
-
-        return layer_input
-
-    # Training computation.
-    logits = model(tf_input_data)
     # compute probabilities regardless of mode
     probabilities = tf.nn.softmax(logits)
     predicted_indices = tf.argmax(probabilities, 1)
@@ -207,3 +107,52 @@ def model_fn(mode):
         labels_one_hot = tf.one_hot(tf_labels, depth=num_labels, on_value=True, off_value=False, dtype=tf.bool)
         auc = tf.metrics.auc(labels_one_hot, probabilities)
         return {'accuracy': accuracy, 'AUC': auc}
+
+
+def parse_example(serialized_example):
+    features = tf.parse_single_example(
+        serialized_example,
+        # Defaults are not specified since both keys are required.
+        features={
+            'label': tf.FixedLenFeature([], tf.int64),
+            'img_raw': tf.FixedLenFeature([], tf.string)
+        })
+
+    with tf.variable_scope('decoder'):
+        image = tf.decode_raw(features['img_raw'], tf.float32)
+        label = tf.cast(features['label'], tf.int32)
+
+    with tf.variable_scope('image'):
+        # reshape and add the channel dimension
+        image = tf.expand_dims(tf.reshape(image, [32, 32]), -1)
+
+    return image, label
+
+
+def input_fn(filenames, num_epochs=None, shuffle=True, batch_size=64):
+    filename_queue = tf.train.string_input_producer(filenames, num_epochs=num_epochs, shuffle=shuffle)
+    reader = tf.TFRecordReader()
+    _, example = reader.read(filename_queue)
+    image, label = parse_example(example)
+
+    if shuffle:
+        images, labels = tf.train.shuffle_batch(
+            [image, label],
+            batch_size,
+            min_after_dequeue=2 * batch_size + 1,
+            capacity=batch_size * 10,
+            num_threads=multiprocessing.cpu_count(),
+            enqueue_many=False,
+            allow_smaller_final_batch=True
+        )
+    else:
+        images, labels = tf.train.batch(
+            [image, label],
+            batch_size,
+            capacity=batch_size * 10,
+            num_threads=multiprocessing.cpu_count(),
+            enqueue_many=False,
+            allow_smaller_final_batch=True
+        )
+
+    return images, labels

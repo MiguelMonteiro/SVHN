@@ -5,66 +5,34 @@ import threading
 import SingleDigitClassification.model as model
 import tensorflow as tf
 from tensorflow.python.saved_model import signature_constants as sig_constants
-from tensorflow.python.lib.io import file_io
-from six.moves import cPickle as pickle
-import numpy as np
-
-
-def load_data(file_path):
-    with file_io.FileIO(file_path, 'r') as f:
-        data = pickle.load(f)
-        train_set, train_labels, valid_set, valid_labels, test_set, test_labels = \
-            [data[key] for key in ['train_set', 'train_labels', 'valid_set', 'valid_labels', 'test_set', 'test_labels']]
-
-    return train_set, train_labels, valid_set, valid_labels, test_set, test_labels
-
-
-# fix later
-class BatchGenerator(object):
-    def __init__(self, data, labels, batch_size, loop=False):
-        self.data = data
-        self.labels = labels
-        self.batch_size = batch_size
-        self.loop = loop
-        self.step = 0
-
-    def __iter__(self):
-        return self
-
-    def next(self):
-        if not self.loop and self.step * self.batch_size > len(self.labels):
-            raise StopIteration
-
-        offset = (self.step * self.batch_size) % (len(self.labels) - self.batch_size)
-        batch_data = self.data[offset:(offset + self.batch_size)]
-        batch_labels = self.labels[offset:(offset + self.batch_size)]
-        self.step += 1
-        return batch_data, batch_labels
 
 
 tf.logging.set_verbosity(tf.logging.INFO)
 
 
+#####
+
+
 class EvaluationRunHook(tf.train.SessionRunHook):
     """EvaluationRunHook performs continuous evaluation of the model.
-  Args:
-    checkpoint_dir (string): Dir to store model checkpoints
-    metric_dir (string): Dir to store metrics like accuracy and auroc
-    graph (tf.Graph): Evaluation graph
-    eval_frequency (int): Frequency of evaluation every n train steps
-    eval_steps (int): Evaluation steps to be performed
-  """
+    Args:
+        checkpoint_dir (string): Dir to store model checkpoints
+        metric_dir (string): Dir to store metrics like accuracy and auroc
+        graph (tf.Graph): Evaluation graph
+        eval_frequency (int): Frequency of evaluation every n train steps
+        eval_steps (int): Evaluation steps to be performed
+    """
 
-    def __init__(self, checkpoint_dir, metric_dict, graph, eval_frequency, file_path, **kwargs):
+    def __init__(self, checkpoint_dir, metric_dict, graph, eval_frequency, eval_steps=None, **kwargs):
 
-        tf.logging.set_verbosity(eval_frequency)
+        self._eval_steps = eval_steps
         self._checkpoint_dir = checkpoint_dir
         self._kwargs = kwargs
         self._eval_every = eval_frequency
         self._latest_checkpoint = None
         self._checkpoints_since_eval = 0
         self._graph = graph
-        self.file_path = file_path
+
         # With the graph object as default graph
         # See https://www.tensorflow.org/api_docs/python/tf/Graph#as_default
         # Adds ops to the graph object
@@ -93,8 +61,7 @@ class EvaluationRunHook(tf.train.SessionRunHook):
         # call to terminate to invoke the next hook, hence locks.
         self._eval_lock = threading.Lock()
         self._checkpoint_lock = threading.Lock()
-        # create two file writers on for training and one for validation
-        self._file_writer = tf.summary.FileWriter(os.path.join(checkpoint_dir, 'valid'))
+        self._file_writer = tf.summary.FileWriter(os.path.join(checkpoint_dir, 'eval'), graph=graph)
 
     def after_run(self, run_context, run_values):
         # Always check for new checkpoints in case a single evaluation
@@ -133,7 +100,6 @@ class EvaluationRunHook(tf.train.SessionRunHook):
             tf.errors.CancelledError, tf.errors.OutOfRangeError))
 
         with tf.Session(graph=self._graph) as session:
-
             # Restores previously saved variables from latest checkpoint
             self._saver.restore(session, self._latest_checkpoint)
 
@@ -145,18 +111,14 @@ class EvaluationRunHook(tf.train.SessionRunHook):
             train_step = session.run(self._gs)
 
             tf.logging.info('Starting Evaluation For Step: {}'.format(train_step))
-
             with coord.stop_on_exception():
                 eval_step = 0
-                train_set, train_labels, valid_set, valid_labels, test_set, test_labels = load_data(self.file_path)
-                valid_batch_generator = BatchGenerator(valid_set, valid_labels, 500)
-                for batch_data, batch_labels in valid_batch_generator:
-                    if coord.should_stop():
-                        break
-                    feed_dict = {'tf_input_data:0': batch_data, 'tf_labels:0': batch_labels, 'keep_prob:0': 1.0}
+                while not coord.should_stop() and (self._eval_steps is None or eval_step < self._eval_steps):
                     summaries, final_values, _ = session.run(
-                        [self._summary_op, self._final_ops_dict, self._eval_ops], feed_dict=feed_dict)
-
+                        [self._summary_op, self._final_ops_dict, self._eval_ops])
+                    if eval_step % 100 == 0:
+                        tf.logging.info("On Evaluation Step: {}".format(eval_step))
+                    eval_step += 1
 
             # Write the summaries
             self._file_writer.add_summary(summaries, global_step=train_step)
@@ -164,10 +126,19 @@ class EvaluationRunHook(tf.train.SessionRunHook):
             tf.logging.info(final_values)
 
 
-def run(target, is_chief, train_steps, job_dir, file_path, batch_size, eval_frequency, export_format, num_epochs):
-    file_path = file_path[0]
-    train_set, train_labels, valid_set, valid_labels, test_set, test_labels = load_data(file_path)
-
+def run(target,
+        is_chief,
+        train_steps,
+        eval_steps,
+        job_dir,
+        train_files,
+        eval_files,
+        train_batch_size,
+        eval_batch_size,
+        learning_rate,
+        eval_frequency,
+        num_epochs,
+        export_format):
     # If the server is chief which is `master`
     # In between graph replication Chief is one node in
     # the cluster with extra responsibility and by default
@@ -175,12 +146,18 @@ def run(target, is_chief, train_steps, job_dir, file_path, batch_size, eval_freq
     if is_chief:
         evaluation_graph = tf.Graph()
         with evaluation_graph.as_default():
-
+            # Features and label tensors
+            features, labels = model.input_fn(
+                eval_files,
+                num_epochs=None if eval_steps else 1,
+                batch_size=eval_batch_size,
+                shuffle=False
+            )
             # Accuracy and AUROC metrics
             # model.model_fn returns the dict when EVAL mode
-            metric_dict = model.model_fn(model.EVAL)
+            metric_dict = model.model_fn(model.EVAL, features, labels)
 
-        hooks = [EvaluationRunHook(job_dir, metric_dict, evaluation_graph, eval_frequency, file_path)]
+        hooks = [EvaluationRunHook(job_dir, metric_dict, evaluation_graph, eval_frequency, eval_steps=eval_steps,)]
     else:
         hooks = []
 
@@ -193,8 +170,11 @@ def run(target, is_chief, train_steps, job_dir, file_path, batch_size, eval_freq
         # See:
         # https://www.tensorflow.org/api_docs/python/tf/train/replica_device_setter
         with tf.device(tf.train.replica_device_setter()):
+
+            # Features and label tensors as read using filename queue
+            features, labels = model.input_fn(train_files, num_epochs, True, train_batch_size)
             # Returns the training graph and global step tensor
-            train_op, global_step_tensor = model.model_fn(model.TRAIN)
+            train_op, global_step_tensor = model.model_fn(model.TRAIN, features, labels)
 
         # Creates a MonitoredSession for training
         # MonitoredSession is a Session-like object that handles
@@ -208,23 +188,16 @@ def run(target, is_chief, train_steps, job_dir, file_path, batch_size, eval_freq
                                                save_summaries_steps=100) as session:
             # Global step to keep track of global number of steps particularly in
             # distributed setting
-            #step = global_step_tensor.eval(session=session)
-
-            # give some random tensors because of feed_dict
-            feed_dict = {'tf_input_data:0': train_set[0:2], 'tf_labels:0': train_labels[0:2], 'keep_prob:0': 1.0}
-            step = session.run(global_step_tensor, feed_dict=feed_dict)
+            step = global_step_tensor.eval(session=session)
 
             # Run the training graph which returns the step number as tracked by
             # the global step tensor.
-            # When train epochs is reached, session.should_stop() will be true. does nothing without queues
+            # When train epochs is reached, session.should_stop() will be true.
             while (train_steps is None or step < train_steps) and not session.should_stop():
-                offset = (step * batch_size) % (len(train_labels) - batch_size)
-                batch_data = train_set[offset:(offset + batch_size)]
-                batch_labels = train_labels[offset:(offset + batch_size)]
-                feed_dict = {'tf_input_data:0': batch_data, 'tf_labels:0': batch_labels, 'keep_prob:0': .9375}
-                step, _ = session.run([global_step_tensor, train_op], feed_dict=feed_dict)
+                step, _ = session.run([global_step_tensor, train_op])
                 if step % 250 == 0:
                     tf.logging.info('Step: {0}'.format(step))
+
         # Find the filename of the latest saved checkpoint file
         latest_checkpoint = tf.train.latest_checkpoint(job_dir)
 
@@ -234,6 +207,7 @@ def run(target, is_chief, train_steps, job_dir, file_path, batch_size, eval_freq
         #                           job_dir,
         #                           model.SERVING_INPUT_FUNCTIONS[export_format],
         #                           hidden_units)
+
 
 #
 # def build_and_run_exports(latest, job_dir, serving_input_fn, hidden_units):

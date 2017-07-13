@@ -2,37 +2,38 @@ from __future__ import print_function
 import os
 import sys
 from six.moves.urllib.request import urlretrieve
-from six.moves import cPickle as pickle
+import tensorflow as tf
 import scipy.io
 import random
 import numpy as np
+from matplotlib.pyplot import plot as plt
 
-# def _bytes_feature(value):
-#     return tf.train.Feature(bytes_list=tf.train.BytesList(value=[value]))
-#
-#
-# def _int64_feature(value):
-#     return tf.train.Feature(int64_list=tf.train.Int64List(value=[value]))
-#
-#
-# def save_to_tf_record(data, labels, file_name):
-#     tfrecords_filename = file_name + '.tfrecords'
-#
-#     writer = tf.python_io.TFRecordWriter(tfrecords_filename)
-#
-#     for im, l in zip(data, labels):
-#         np.set_printoptions(precision=128)
-#         shape = np.array(im.shape).tostring()
-#         img_raw = im.tostring()
-#         l_raw = l.tostring()
-#
-#         example = tf.train.Example(features=tf.train.Features(feature={
-#             'shape': _bytes_feature(shape),
-#             'image_raw': _bytes_feature(img_raw),
-#             'label_raw': _bytes_feature(l_raw)}))
-#
-#         writer.write(example.SerializeToString())
-#     writer.close()
+
+def _bytes_feature(value):
+    return tf.train.Feature(bytes_list=tf.train.BytesList(value=[value]))
+
+
+def _int64_feature(value):
+    return tf.train.Feature(int64_list=tf.train.Int64List(value=[value]))
+
+
+def to_tf_record(images, labels, tf_record_file_path):
+
+    writer = tf.python_io.TFRecordWriter(tf_record_file_path)
+
+    for image, label in zip(images, labels):
+
+        # must set precision to have float32 precision
+        np.set_printoptions(precision=32)
+
+        example = tf.train.Example(features=tf.train.Features(feature={
+            'img_raw': _bytes_feature(image.tostring()),
+            'label': _int64_feature(label)}))
+
+        writer.write(example.SerializeToString())
+
+    writer.close()
+    print('Final file size:', os.stat(tf_record_file_path).st_size / 1e6, ' MB')
 
 
 def im2gray(image):
@@ -69,7 +70,6 @@ def visualize_some_examples(data, labels):
     plt.show()
 
 
-url = 'http://ufldl.stanford.edu/housenumbers/'
 last_percent_reported = None
 
 
@@ -93,6 +93,7 @@ def download_progress_hook(count, blockSize, totalSize):
 
 def maybe_download(filename, force=False):
     """Download a file if not present, and make sure it's the right size."""
+    url = 'http://ufldl.stanford.edu/housenumbers/'
     if force or not os.path.exists(filename):
         print('Attempting to download:', filename)
         filename, _ = urlretrieve(url + filename, filename, reporthook=download_progress_hook)
@@ -124,56 +125,30 @@ def split_into_train_and_validation_set(train_data, train_labels, valid_percenta
 def pre_process_images(data):
     return global_contrast_normalization(im2gray(data)).astype(np.float32)
 
-
-
-
+extra_matfile = maybe_download('data/extra_32x32.mat')
 train_matfile = maybe_download('data/train_32x32.mat')
 test_matfile = maybe_download('data/test_32x32.mat')
-extra_matfile = maybe_download('data/extra_32x32.mat')
 
 
-train_data = scipy.io.loadmat('data/train_32x32.mat', variable_names='X').get('X')
-train_labels = scipy.io.loadmat('data/train_32x32.mat', variable_names='y').get('y')
-test_data = scipy.io.loadmat('data/test_32x32.mat', variable_names='X').get('X')
-test_labels = scipy.io.loadmat('data/test_32x32.mat', variable_names='y').get('y')
-#extra_data = scipy.io.loadmat('data/extra_32x32.mat', variable_names='X').get('X')
-#extra_labels = scipy.io.loadmat('data/extra_32x32.mat', variable_names='y').get('y')
+def process_mat_file(mat_file, pre_process=True):
+        data = fix_data_shape(scipy.io.loadmat(mat_file, variable_names='X').get('X'))
+        labels = fix_labels(scipy.io.loadmat(mat_file, variable_names='y').get('y'))
+        print(data.shape, labels.shape)
+        if pre_process:
+            data = pre_process_images(data)
+        return data, labels
 
-train_data = fix_data_shape(train_data)
-test_data = fix_data_shape(test_data)
-#extra_data = fix_data_shape(extra_data)
-
-train_labels = fix_labels(train_labels)
-test_labels = fix_labels(test_labels)
-#extra_labels = fix_labels(extra_labels)
-
-print(train_data.shape, train_labels.shape)
-print(test_data.shape, test_labels.shape)
-#print(extra_data.shape, extra_labels.shape)
+train_data, train_labels = process_mat_file(train_matfile)
+test_data, test_labels = process_mat_file(test_matfile)
 
 #all_train_data = np.concatenate((train_data, extra_data), axis=0)
 #all_train_labels = np.concatenate((train_labels, extra_labels), axis=0)
-all_train_data = train_data
-all_train_labels = train_labels
 
 train_data, train_labels = shuffle_data(train_data, train_labels)
 train_data, train_labels, valid_data, valid_labels = split_into_train_and_validation_set(train_data, train_labels)
 
 
-train_data = pre_process_images(train_data)
-valid_data = pre_process_images(valid_data)
-test_data = pre_process_images(test_data)
+to_tf_record(train_data, train_labels, 'data/train_data.tfrecord')
+to_tf_record(valid_data, valid_labels, 'data/valid_data.tfrecord')
 
-#visualize_some_examples(train_data, train_labels)
-
-save_to_tf_record(train_data, train_labels,'asdf')
-
-# filename = 'data/SVHN.pickle'
-# with open(filename, 'wb') as f:
-#     print('Pickling file: {0}'.format(filename))
-#     save = {'train_set': train_data, 'train_labels': train_labels,
-#             'valid_set': valid_data, 'valid_labels': valid_labels,
-#             'test_set': test_data, 'test_labels': test_labels}
-#     pickle.dump(save, f, pickle.HIGHEST_PROTOCOL)
-#     statinfo = os.stat(filename)
-#     print('Compressed pickle size:', statinfo.st_size/1e6, ' MB')
+# visualize_some_examples(train_data, train_labels)

@@ -107,6 +107,7 @@ ENV/
 *.csv
 *.gz
 *.mat
+*.tfrecord
 
 # End of https://www.gitignore.io/api/python
 /SingleDigitClassification/data/
